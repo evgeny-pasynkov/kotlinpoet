@@ -15,9 +15,14 @@
  */
 package com.squareup.kotlinpoet
 
+import com.squareup.kotlinpoet.KModifier.ABSTRACT
+import com.squareup.kotlinpoet.KModifier.ANNOTATION
 import com.squareup.kotlinpoet.KModifier.COMPANION
+import com.squareup.kotlinpoet.KModifier.ENUM
 import com.squareup.kotlinpoet.KModifier.EXPECT
 import com.squareup.kotlinpoet.KModifier.PUBLIC
+import com.squareup.kotlinpoet.TypeSpec.Kind.Interface
+import com.squareup.kotlinpoet.TypeSpec.Kind.Object
 import java.lang.reflect.Type
 import kotlin.reflect.KClass
 
@@ -28,7 +33,6 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
   val anonymousTypeArguments = builder.anonymousTypeArguments
   val kdoc = builder.kdoc.build()
   val annotations = builder.annotations.toImmutableList()
-  val modifiers = builder.modifiers.toImmutableSet()
   val typeVariables = builder.typeVariables.toImmutableList()
   val companionObject = builder.companionObject
   val primaryConstructor = builder.primaryConstructor
@@ -47,21 +51,10 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
   val funSpecs = builder.funSpecs.toImmutableList()
   val typeSpecs = builder.typeSpecs.toImmutableList()
 
-  private val implicitPropertyModifiers = kind.implicitPropertyModifiers + when {
-    KModifier.EXPECT in modifiers -> setOf(KModifier.EXPECT)
-    else -> emptySet()
-  }
-
-  private val implicitFunctionModifiers = kind.implicitFunctionModifiers + when {
-    KModifier.EXPECT in modifiers -> setOf(KModifier.EXPECT)
-    else -> emptySet()
-  }
-
   fun toBuilder(): Builder {
     val builder = Builder(kind, name, anonymousTypeArguments)
     builder.kdoc.add(kdoc)
     builder.annotations += annotations
-    builder.modifiers += modifiers
     builder.typeVariables += typeVariables
     builder.superclass = superclass
     builder.superclassConstructorParameters += superclassConstructorParameters
@@ -121,7 +114,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
       } else {
         codeWriter.emitKdoc(kdoc)
         codeWriter.emitAnnotations(annotations, false)
-        codeWriter.emitModifiers(modifiers, setOf(PUBLIC))
+        codeWriter.emitModifiers(kind.modifiers, setOf(PUBLIC))
         codeWriter.emit(kind.declarationKeyword)
         if (name != null) {
           codeWriter.emitCode(" %L", name)
@@ -180,7 +173,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
           codeWriter.emit("\n")
           return // Avoid unnecessary braces "{}".
         }
-        if (kind != Kind.ANNOTATION) {
+        if (!kind.isAnnotation) {
           codeWriter.emit(" {\n")
         }
       }
@@ -210,7 +203,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
           continue
         }
         if (!firstMember) codeWriter.emit("\n")
-        propertySpec.emit(codeWriter, implicitPropertyModifiers)
+        propertySpec.emit(codeWriter, kind.implicitPropertyModifiers)
         firstMember = false
       }
 
@@ -233,7 +226,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
       for (funSpec in funSpecs) {
         if (!funSpec.isConstructor) continue
         if (!firstMember) codeWriter.emit("\n")
-        funSpec.emit(codeWriter, name, implicitFunctionModifiers)
+        funSpec.emit(codeWriter, name, kind.implicitFunctionModifiers)
         firstMember = false
       }
 
@@ -241,7 +234,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
       for (funSpec in funSpecs) {
         if (funSpec.isConstructor) continue
         if (!firstMember) codeWriter.emit("\n")
-        funSpec.emit(codeWriter, name, implicitFunctionModifiers)
+        funSpec.emit(codeWriter, name, kind.implicitFunctionModifiers)
         firstMember = false
       }
 
@@ -257,7 +250,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
       codeWriter.unindent()
       codeWriter.popType()
 
-      if (kind != Kind.ANNOTATION) {
+      if (!kind.isAnnotation) {
         codeWriter.emit("}")
       }
       if (enumName == null && anonymousTypeArguments == null) {
@@ -284,7 +277,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
 
   private val hasNoBody: Boolean
     get() {
-      if (kind == Kind.ANNOTATION) {
+      if (kind.isAnnotation) {
         return true
       }
       if (propertySpecs.isNotEmpty()) {
@@ -314,35 +307,51 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
 
   override fun toString() = buildString { emit(CodeWriter(this), null) }
 
-  enum class Kind(
+  sealed class Kind(
     internal val declarationKeyword: String,
-    internal val implicitPropertyModifiers: Set<KModifier>,
-    internal val implicitFunctionModifiers: Set<KModifier>
+    internal val defaultImplicitPropertyModifiers: Set<KModifier>,
+    internal val defaultImplicitFunctionModifiers: Set<KModifier>,
+    internal val modifiers: MutableSet<KModifier> = mutableSetOf()
   ) {
-    CLASS(
+
+    val isEnum get() = this is Class && ENUM in modifiers
+
+    val isAnnotation get() = this is Class && ANNOTATION in modifiers
+
+    val isSimpleClass get() = this is Class && !isEnum && !isAnnotation
+
+    val implicitPropertyModifiers get() =
+      if (isAnnotation) emptySet()
+      else defaultImplicitPropertyModifiers + when {
+        EXPECT in modifiers -> setOf(EXPECT)
+        else -> emptySet()
+      }
+
+    val implicitFunctionModifiers get() = defaultImplicitFunctionModifiers + when {
+      ANNOTATION in modifiers -> setOf(ABSTRACT)
+      EXPECT in modifiers -> setOf(EXPECT)
+      else -> emptySet()
+    }
+
+    override fun toString() = javaClass.simpleName.toUpperCase()
+
+    class Class(vararg modifiers: KModifier) : Kind(
         "class",
-        setOf(KModifier.PUBLIC),
-        setOf(KModifier.PUBLIC)),
+        setOf(PUBLIC),
+        setOf(PUBLIC),
+        modifiers.toMutableSet())
 
-    OBJECT(
+    class Object(vararg modifiers: KModifier) : Kind(
         "object",
-        setOf(KModifier.PUBLIC),
-        setOf(KModifier.PUBLIC)),
+        setOf(PUBLIC),
+        setOf(PUBLIC),
+        modifiers.toMutableSet())
 
-    INTERFACE(
+    class Interface(vararg modifiers: KModifier): Kind(
         "interface",
-        setOf(KModifier.PUBLIC),
-        setOf(KModifier.PUBLIC, KModifier.ABSTRACT)),
-
-    ENUM(
-        "enum class",
-        setOf(KModifier.PUBLIC),
-        setOf(KModifier.PUBLIC)),
-
-    ANNOTATION(
-        "annotation class",
-        emptySet(),
-        setOf(KModifier.PUBLIC, KModifier.ABSTRACT));
+        setOf(PUBLIC),
+        setOf(PUBLIC, ABSTRACT),
+        modifiers.toMutableSet())
   }
 
   class Builder internal constructor(
@@ -352,7 +361,6 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
   ) {
     internal val kdoc = CodeBlock.builder()
     internal val annotations = mutableListOf<AnnotationSpec>()
-    internal val modifiers = mutableListOf<KModifier>()
     internal val typeVariables = mutableListOf<TypeVariableName>()
     internal var primaryConstructor: FunSpec? = null
     internal var companionObject: TypeSpec? = null
@@ -394,7 +402,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
 
     fun addModifiers(vararg modifiers: KModifier) = apply {
       check(anonymousTypeArguments == null) { "forbidden on anonymous types." }
-      this.modifiers += modifiers
+      kind.modifiers += modifiers
     }
 
     fun addTypeVariables(typeVariables: Iterable<TypeVariableName>) = apply {
@@ -408,15 +416,17 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
     }
 
     fun companionObject(companionObject: TypeSpec) = apply {
-      check(kind.isOneOf(Kind.CLASS, Kind.INTERFACE)) { "$kind can't have a companion object" }
-      require(companionObject.kind == Kind.OBJECT && COMPANION in companionObject.modifiers) {
+      check(kind.isSimpleClass || kind is Interface) {
+        "$kind can't have a companion object"
+      }
+      require(companionObject.kind is Object && COMPANION in companionObject.kind.modifiers) {
         "expected a companion object class but was $kind "
       }
       this.companionObject = companionObject
     }
 
     fun primaryConstructor(primaryConstructor: FunSpec?) = apply {
-      check(kind.isOneOf(Kind.CLASS, Kind.ENUM, Kind.ANNOTATION)) {
+      check(kind is Kind.Class) {
         "$kind can't have initializer blocks"
       }
       if (primaryConstructor != null) {
@@ -434,7 +444,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
     }
 
     private fun ensureCanHaveSuperclass() {
-      check(kind.isOneOf(Kind.CLASS, Kind.OBJECT)) {
+      check(kind.isSimpleClass || kind is Object) {
         "only classes can have super classes, not $kind"
       }
     }
@@ -462,7 +472,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
       if (delegate.isEmpty()) {
         this.superinterfaces.put(superinterface, null)
       } else {
-        require(kind == Kind.CLASS) {
+        require(kind.isSimpleClass) {
           "delegation only allowed for classes (found $kind '$name')"
         }
         require(!superinterface.nullable) {
@@ -500,7 +510,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
       name: String,
       typeSpec: TypeSpec = anonymousClassBuilder("").build()
     ) = apply {
-      check(kind == Kind.ENUM) { "${this.name} is not enum" }
+      check(kind.isEnum) { "${this.name} is not enum" }
       require(typeSpec.anonymousTypeArguments != null) {
         "enum constants must have anonymous type arguments"
       }
@@ -513,7 +523,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
     }
 
     fun addProperty(propertySpec: PropertySpec) = apply {
-      if (EXPECT in modifiers) {
+      if (EXPECT in kind.modifiers) {
         require(propertySpec.initializer == null) {
           "properties in expect classes can't have initializers"
         }
@@ -534,10 +544,10 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
         = addProperty(name, type.asTypeName(), *modifiers)
 
     fun addInitializerBlock(block: CodeBlock) = apply {
-      check(kind.isOneOf(Kind.CLASS, Kind.OBJECT, Kind.ENUM)) {
+      check(kind.isSimpleClass || kind.isEnum || kind is Object) {
         "$kind can't have initializer blocks"
       }
-      check(EXPECT !in modifiers) {
+      check(EXPECT !in kind.modifiers) {
         "expect $kind can't have initializer blocks"
       }
       initializerBlock.add("init {\n")
@@ -553,14 +563,14 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
 
     fun addFunction(funSpec: FunSpec) = apply {
       when {
-        kind == Kind.INTERFACE -> {
+        kind is Interface -> {
           requireNoneOf(funSpec.modifiers, KModifier.INTERNAL, KModifier.PROTECTED)
           requireNoneOrOneOf(funSpec.modifiers, KModifier.ABSTRACT, KModifier.PRIVATE)
         }
-        kind == Kind.ANNOTATION -> require(funSpec.modifiers == kind.implicitFunctionModifiers) {
-          "$kind $name.${funSpec.name} requires modifiers ${kind.implicitFunctionModifiers}"
+        kind.isAnnotation -> require(funSpec.modifiers == kind.implicitFunctionModifiers) {
+          "annotation class $name.${funSpec.name} requires modifiers ${kind.implicitFunctionModifiers}"
         }
-        EXPECT in modifiers -> require(funSpec.body.isEmpty()) {
+        EXPECT in kind.modifiers -> require(funSpec.body.isEmpty()) {
           "functions in expect classes can't have bodies"
         }
       }
@@ -576,13 +586,13 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
     }
 
     fun build(): TypeSpec {
-      require(kind != Kind.ENUM || enumConstants.isNotEmpty()) {
+      require(!kind.isEnum || enumConstants.isNotEmpty()) {
         "at least one enum constant is required for $name"
       }
 
-      val isAbstract = modifiers.contains(KModifier.ABSTRACT) || kind != Kind.CLASS
+      val isAbstract = ABSTRACT in kind.modifiers || kind !is Kind.Class || !kind.isSimpleClass
       for (funSpec in funSpecs) {
-        require(isAbstract || !funSpec.modifiers.contains(KModifier.ABSTRACT)) {
+        require(isAbstract || ABSTRACT !in funSpec.modifiers) {
           "non-abstract type $name cannot declare abstract function ${funSpec.name}"
         }
       }
@@ -598,30 +608,26 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
   }
 
   companion object {
-    @JvmStatic fun classBuilder(name: String) = Builder(Kind.CLASS, name, null)
+    @JvmStatic fun classBuilder(name: String) = Builder(Kind.Class(), name, null)
 
     @JvmStatic fun classBuilder(className: ClassName) = classBuilder(className.simpleName())
 
-    @JvmStatic fun expectClassBuilder(name: String) = Builder(Kind.CLASS, name, null).apply {
-      addModifiers(KModifier.EXPECT)
-    }
+    @JvmStatic fun expectClassBuilder(name: String) = Builder(Kind.Class(EXPECT), name, null)
 
     @JvmStatic fun expectClassBuilder(className: ClassName) = expectClassBuilder(className.simpleName())
 
-    @JvmStatic fun objectBuilder(name: String) = Builder(Kind.OBJECT, name, null)
+    @JvmStatic fun objectBuilder(name: String) = Builder(Kind.Object(), name, null)
 
     @JvmStatic fun objectBuilder(className: ClassName) = objectBuilder(className.simpleName())
 
     @JvmStatic @JvmOverloads fun companionObjectBuilder(name: String? = null) =
-        Builder(Kind.OBJECT, name, null).apply {
-          addModifiers(KModifier.COMPANION)
-        }
+        Builder(Kind.Object(COMPANION), name, null)
 
-    @JvmStatic fun interfaceBuilder(name: String) = Builder(Kind.INTERFACE, name, null)
+    @JvmStatic fun interfaceBuilder(name: String) = Builder(Kind.Interface(), name, null)
 
     @JvmStatic fun interfaceBuilder(className: ClassName) = interfaceBuilder(className.simpleName())
 
-    @JvmStatic fun enumBuilder(name: String) = Builder(Kind.ENUM, name, null)
+    @JvmStatic fun enumBuilder(name: String) = Builder(Kind.Class(ENUM), name, null)
 
     @JvmStatic fun enumBuilder(className: ClassName) = enumBuilder(className.simpleName())
 
@@ -630,12 +636,12 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
     }
 
     @JvmStatic fun anonymousClassBuilder(typeArgumentsFormat: String, vararg args: Any): Builder {
-      return Builder(Kind.CLASS, null, CodeBlock.builder()
+      return Builder(Kind.Class(), null, CodeBlock.builder()
           .add(typeArgumentsFormat, *args)
           .build())
     }
 
-    @JvmStatic fun annotationBuilder(name: String) = Builder(Kind.ANNOTATION, name, null)
+    @JvmStatic fun annotationBuilder(name: String) = Builder(Kind.Class(ANNOTATION), name, null)
 
     @JvmStatic fun annotationBuilder(className: ClassName)
         = annotationBuilder(className.simpleName())
