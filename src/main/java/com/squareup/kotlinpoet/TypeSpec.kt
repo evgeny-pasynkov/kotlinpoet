@@ -33,6 +33,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
   val anonymousTypeArguments = builder.anonymousTypeArguments
   val kdoc = builder.kdoc.build()
   val annotations = builder.annotations.toImmutableList()
+  val modifiers = kind.modifiers.toImmutableSet()
   val typeVariables = builder.typeVariables.toImmutableList()
   val companionObject = builder.companionObject
   val primaryConstructor = builder.primaryConstructor
@@ -311,27 +312,29 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
     internal val declarationKeyword: String,
     internal val defaultImplicitPropertyModifiers: Set<KModifier>,
     internal val defaultImplicitFunctionModifiers: Set<KModifier>,
-    internal val modifiers: MutableSet<KModifier> = mutableSetOf()
+    internal val modifiers: Set<KModifier> = emptySet()
   ) {
 
-    val isEnum get() = this is Class && ENUM in modifiers
+    internal val isEnum get() = this is Class && ENUM in modifiers
 
-    val isAnnotation get() = this is Class && ANNOTATION in modifiers
+    internal val isAnnotation get() = this is Class && ANNOTATION in modifiers
 
-    val isSimpleClass get() = this is Class && !isEnum && !isAnnotation
+    internal val isSimpleClass get() = this is Class && !isEnum && !isAnnotation
 
-    val implicitPropertyModifiers get() =
+    internal val implicitPropertyModifiers get() =
       if (isAnnotation) emptySet()
       else defaultImplicitPropertyModifiers + when {
         EXPECT in modifiers -> setOf(EXPECT)
         else -> emptySet()
       }
 
-    val implicitFunctionModifiers get() = defaultImplicitFunctionModifiers + when {
+    internal val implicitFunctionModifiers get() = defaultImplicitFunctionModifiers + when {
       ANNOTATION in modifiers -> setOf(ABSTRACT)
       EXPECT in modifiers -> setOf(EXPECT)
       else -> emptySet()
     }
+
+    abstract fun plusModifiers(vararg modifiers: KModifier): Kind
 
     override fun toString() = javaClass.simpleName.toUpperCase()
 
@@ -339,23 +342,35 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
         "class",
         setOf(PUBLIC),
         setOf(PUBLIC),
-        modifiers.toMutableSet())
+        modifiers.toSet()) {
+
+      override fun plusModifiers(vararg modifiers: KModifier) =
+        Class(*(this.modifiers.toTypedArray() + modifiers))
+    }
 
     class Object(vararg modifiers: KModifier) : Kind(
         "object",
         setOf(PUBLIC),
         setOf(PUBLIC),
-        modifiers.toMutableSet())
+        modifiers.toSet()) {
+
+      override fun plusModifiers(vararg modifiers: KModifier) =
+          Object(*(this.modifiers.toTypedArray() + modifiers))
+    }
 
     class Interface(vararg modifiers: KModifier): Kind(
         "interface",
         setOf(PUBLIC),
         setOf(PUBLIC, ABSTRACT),
-        modifiers.toMutableSet())
+        modifiers.toSet()) {
+
+      override fun plusModifiers(vararg modifiers: KModifier) =
+          Interface(*(this.modifiers.toTypedArray() + modifiers))
+    }
   }
 
   class Builder internal constructor(
-    internal val kind: Kind,
+    internal var kind: Kind,
     internal val name: String?,
     internal val anonymousTypeArguments: CodeBlock?
   ) {
@@ -402,7 +417,7 @@ class TypeSpec private constructor(builder: TypeSpec.Builder) {
 
     fun addModifiers(vararg modifiers: KModifier) = apply {
       check(anonymousTypeArguments == null) { "forbidden on anonymous types." }
-      kind.modifiers += modifiers
+      kind = kind.plusModifiers(*modifiers)
     }
 
     fun addTypeVariables(typeVariables: Iterable<TypeVariableName>) = apply {
